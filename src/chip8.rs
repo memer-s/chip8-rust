@@ -5,6 +5,7 @@ enum Mode {
 	Debug
 }
 
+
 pub struct Chip {
 	memory: [u8;4096],
 	stack: [u16;16],
@@ -61,7 +62,7 @@ impl Chip {
 	}
 
 	pub fn print_memory(&self, pos: u16) {
-		println!("\n\n   ---  0x{:X} - 0x{:X}  ---  PC: {}, SP: {:03X}",
+		println!("\n\n   ---  0x{:X} - 0x{:X}  ---  PC: {}, SP: {:03X}    [Memory]",
 			(pos/256)*256, 
 			((pos/256)+1)*256,
 			format!("{:03X}",self.pc).red(),
@@ -87,6 +88,25 @@ impl Chip {
 		}
 	}
 
+	pub fn print_registers(&self) {
+		print!("\n[Registers]         [Stack]       [Other]\n");
+		for i in 0..4 {
+			for j in 0..4 {
+				print!("{:02X} ", self.registers[i*4+j]);
+			}
+			print!("    ");
+			for j in 0..4 {
+				print!("{:03X} ", self.stack[i*4+j]);
+			}
+			print!("  ");
+
+			if i == 0 {
+				print!("I: {:03X}", self.address_register);
+			}
+			print!("\n");
+		}
+	}
+
 	pub fn get_display(&self) -> [[bool; 64]; 32] {
 		self.display
 	}
@@ -97,11 +117,11 @@ impl Chip {
 		let both = ((b1 as u16) << 8) + b2 as u16;
 
 		let nnn: u16 = (((b1&0x0f) as u16) << 8)+(b2 as u16);
-		let nn: u8 = b1;
-		let n: u8 = b1 & 0x0f;
+		let nn: u8 = b2;
+		let n: u8 = b2 & 0x0f;
 
 		let x: usize = (b1 & 0x0f) as usize;
-		let y: usize = (b1 & 0xf0) as usize;
+		let y: usize = (b2 & 0xf0) as usize >> 4;
 
 		match (b1 & 0xf0) >> 4 {
 			0x0 => {
@@ -114,7 +134,8 @@ impl Chip {
 						}
 					},
 					0x00EE => {
-						
+						self.sp -= 1;
+						self.pc = self.stack[self.sp as usize];
 					},
 
 					_ => {
@@ -127,7 +148,9 @@ impl Chip {
 				self.pc = nnn;
 			},
 			0x2 => {
-
+				self.stack[self.sp as usize] = nnn;
+				self.sp += 1;
+				self.pc += 2;
 			},
 			0x3 => {
 				if self.registers[x] == nn {
@@ -170,10 +193,25 @@ impl Chip {
 						self.registers[x] ^= self.registers[y];
 					},
 					0x4 => {
-						self.registers[x] += self.registers[y];
+						self.registers[0xf] = 0;
+						if (self.registers[x] as u16 + self.registers[y] as u16)&0x100 == 0x100 {
+							self.registers[0xf] = 1;
+							self.registers[x] = ((self.registers[x] as u16 + self.registers[y] as u16)&0x00ff) as u8;
+						}
+						else {
+							self.registers[x] += self.registers[y];
+						}
 					},
 					0x5 => {
-						self.registers[x] -= self.registers[y];
+						self.registers[0xf] = 0;
+						if self.registers[x] > self.registers[y] {
+							self.registers[0xf] = 1;
+							self.registers[x] -= self.registers[y];
+						}
+						else {
+							println!("{}, {} at {x:}, {y:}", self.registers[x], self.registers[y]);
+							self.registers[x] = (self.registers[x] as i16 - self.registers[y] as i16) as u8
+						}
 					},
 					0x6 => {
 						self.registers[0xf] = self.registers[x] & 0x1;
@@ -215,13 +253,12 @@ impl Chip {
 				for i in 0..n {
 					let byte = self.memory[i as usize + self.address_register as usize];
 					for j in 0..8 {
-						let current_pixel = ((byte << j) & 0x80) as u8;
+						let current_pixel = ((byte >> (7-j)) & 0x01) as u8;
 						if current_pixel == 1 {
-							self.display[(self.registers[y] + i) as usize][(self.registers[x] + j) as usize] = true; 
+							self.display[(self.registers[y] + i) as usize][(self.registers[x] + j) as usize] ^= true; 
 						}
 					}
 				}
-				self.display[2][2] = true;
 				self.pc += 2;
 			},
 			0xE => {
@@ -230,36 +267,46 @@ impl Chip {
 			0xF => {
 				match b2 {
 					0x07 => {
-						// GEt delay
+						self.pc += 2;
 					},
 					0x0A => {
+						self.pc += 2;
 						// GEt delay
 					},
 					0x15 => {
+						self.pc += 2;
 						// Set delay
 					},
 					0x18 => {
+						self.pc += 2;
 						// Set delay
 					},
 					0x1E => {
 						self.address_register += self.registers[x] as u16;
+						self.pc += 2;
 					},
 					0x29 => {
 						self.address_register = x as u16 * 5;
 						self.pc += 2;
 					},
 					0x33 => {
-
+						let num = self.registers[x];
+						self.memory[self.address_register as usize] = num/100;
+						self.memory[self.address_register as usize+1] = (num%100)/10; 
+						self.memory[self.address_register as usize+2] = (num%10);
+						self.pc += 2;
 					},
 					0x55 => {
-						for i  in 0..x {
+						for i in 0..=x {
 							self.memory[(self.address_register + (i as u16)) as usize] = self.registers[i];
 						}
+						self.pc += 2;
 					},
 					0x65 => {
-						for i  in 0..x {
+						for i in 0..=x {
 							self.registers[i] = self.memory[(self.address_register + (i as u16)) as usize];
 						}
+						self.pc += 2;
 					},
 					_ => {
 						println!("INVALID OPCODE: {:04X}", both)
